@@ -128,8 +128,17 @@ final class WindowRegistry: ObservableObject {
 
     /// Windows currently minimized, in observation order. Newest minimized
     /// last — `last(where: bundleID:)` gives the most-recently minimized.
+    /// Native macOS tabs are separate AX windows that all report minimized
+    /// with the same frame, so a minimized tab group collapses to its first
+    /// tab here (restoring any tab brings back the whole group).
     var minimized: [AppWindow] {
-        windows.filter(\.isMinimized)
+        var seenTabGroups = Set<String>()
+        return windows.filter { window in
+            guard window.isMinimized else { return false }
+            guard let frame = window.frame else { return true }
+            let key = "\(window.processIdentifier):\(frame.origin.x),\(frame.origin.y),\(frame.width),\(frame.height)"
+            return seenTabGroups.insert(key).inserted
+        }
     }
 
     /// Windows that are visible (non-minimized) and large enough to be
