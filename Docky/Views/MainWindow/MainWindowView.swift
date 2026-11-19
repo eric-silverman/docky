@@ -457,6 +457,15 @@ final class ClickThroughHostingView: NSHostingView<MainWindowView> {
             let sourceFolderTileID = DockDragService.shared.sourceFolderTileID
             let sourceFolderBundleIdentifier = DockDragService.shared.sourceFolderBundleIdentifier
             defer { DockDragService.shared.clear() }
+            if let targetTileID,
+               case .folder(let folder)? = TileStore.shared.tiles.first(where: { $0.id == targetTileID })?.content {
+                let urls: [URL]
+                switch kind {
+                case .app(let url, _), .folder(let url, _): urls = [url]
+                case .document(let documentURLs): urls = documentURLs
+                }
+                return FolderAccessService.moveItems(urls, into: folder.url)
+            }
             switch kind {
             case .app(_, let tile):
                 guard let index = destinationIndex else { return false }

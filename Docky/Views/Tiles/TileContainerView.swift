@@ -1496,6 +1496,7 @@ struct TileContainerView: View {
             // (move to trash). Without the trash fallback the drop lands with
             // no target and performDragOperation silently rejects it.
             let targetID = documentDropTargetTileID(at: location)
+                ?? folderDropTargetTileID(at: location)
                 ?? trashDropTargetTileID(at: location, sourceTileID: "")
             if dockDrag.documentTargetTileID != targetID { dockDrag.documentTargetTileID = targetID }
             if dockDrag.destinationIndex != nil { dockDrag.destinationIndex = nil }
@@ -1503,6 +1504,14 @@ struct TileContainerView: View {
             dockDrag.updateSpringLoadCandidate(springLoadCandidateTileID(at: location))
             return
         case .app:
+            // Over a folder tile (e.g. Applications) → move the app there.
+            if let targetID = folderDropTargetTileID(at: location) {
+                if dockDrag.documentTargetTileID != targetID { dockDrag.documentTargetTileID = targetID }
+                if dockDrag.destinationIndex != nil { dockDrag.destinationIndex = nil }
+                if dockDrag.destinationSection != nil { dockDrag.destinationSection = nil }
+                return
+            }
+            if dockDrag.documentTargetTileID != nil { dockDrag.documentTargetTileID = nil }
             guard isPointInPinnedDropRegion(positionValue) else {
                 dockDrag.destinationIndex = nil
                 dockDrag.destinationSection = nil
@@ -1516,8 +1525,10 @@ struct TileContainerView: View {
             if dockDrag.destinationIndex != index { dockDrag.destinationIndex = index }
             if dockDrag.destinationSection != .pinned { dockDrag.destinationSection = .pinned }
         case .folder:
-            // Hovering over an app tile → open-with target (any app, like document drops).
-            if let targetID = documentDropTargetTileID(at: location) {
+            // Hovering over an app tile → open-with target (any app, like
+            // document drops); over a folder tile → move into it.
+            if let targetID = documentDropTargetTileID(at: location)
+                ?? folderDropTargetTileID(at: location) {
                 if dockDrag.documentTargetTileID != targetID { dockDrag.documentTargetTileID = targetID }
                 if dockDrag.destinationIndex != nil { dockDrag.destinationIndex = nil }
                 if dockDrag.destinationSection != nil { dockDrag.destinationSection = nil }
@@ -1574,6 +1585,17 @@ struct TileContainerView: View {
                   !app.bundleIdentifier.isEmpty else {
                 return nil
             }
+            return tile.id
+        }
+        return nil
+    }
+
+    /// Folder tile under the cursor, for dropping files into the folder.
+    private func folderDropTargetTileID(at location: CGPoint) -> String? {
+        guard !editMode.isActive else { return nil }
+        for tile in displayTiles.reversed() {
+            guard let frame = tileFrames[tile.id], frame.contains(location) else { continue }
+            guard case .folder = tile.content else { return nil }
             return tile.id
         }
         return nil

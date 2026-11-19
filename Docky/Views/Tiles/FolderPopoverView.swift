@@ -426,17 +426,7 @@ struct FolderPopoverView: View {
         }
 
         group.notify(queue: .main) {
-            for source in collected {
-                let target = destination.appendingPathComponent(source.lastPathComponent)
-                guard target.standardizedFileURL != source.standardizedFileURL else { continue }
-                do {
-                    try FileManager.default.moveItem(at: source, to: target)
-                } catch {
-                    // Cross-volume moves throw; copy as a fallback so the
-                    // user still gets something at the destination.
-                    try? FileManager.default.copyItem(at: source, to: target)
-                }
-            }
+            FolderAccessService.moveItems(collected, into: destination)
             isPresented = false
             DockDragService.shared.clear()
         }

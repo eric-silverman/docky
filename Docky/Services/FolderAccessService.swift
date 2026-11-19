@@ -35,6 +35,28 @@ final class FolderAccessService: ObservableObject {
 
     private init() {}
 
+    /// Moves `sources` into `destination` like a Finder drop: a move, or a
+    /// copy when the move fails (another volume, a read-only disk image).
+    /// Never overwrites, and skips items already in `destination` or the
+    /// destination folder itself. Returns true if anything landed.
+    @discardableResult
+    nonisolated static func moveItems(_ sources: [URL], into destination: URL) -> Bool {
+        let destinationPath = destination.standardizedFileURL.path
+        var landedAny = false
+        for source in sources {
+            let sourcePath = source.standardizedFileURL.path
+            guard sourcePath != destinationPath,
+                  !destinationPath.hasPrefix(sourcePath + "/") else { continue }
+            let target = destination.appendingPathComponent(source.lastPathComponent)
+            guard target.standardizedFileURL.path != sourcePath else { continue }
+            if (try? FileManager.default.moveItem(at: source, to: target)) != nil
+                || (try? FileManager.default.copyItem(at: source, to: target)) != nil {
+                landedAny = true
+            }
+        }
+        return landedAny
+    }
+
     deinit {
         for watcher in watchersByURL.values {
             watcher.source.cancel()
