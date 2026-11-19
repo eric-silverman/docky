@@ -2660,9 +2660,15 @@ private struct FolderListMenuPresenter: NSViewRepresentable {
 
         private func menuItem(for itemURL: URL) -> NSMenuItem {
             let item = NSMenuItem(title: displayName(for: itemURL), action: nil, keyEquivalent: "")
-            item.image = listMenuIcon(for: itemURL)
+            let isFolder = isNavigableFolder(itemURL)
+            item.view = FolderListMenuItemView(
+                url: itemURL,
+                title: item.title,
+                icon: listMenuIcon(for: itemURL),
+                hasSubmenu: isFolder
+            )
 
-            if isNavigableFolder(itemURL) {
+            if isFolder {
                 let submenu = NSMenu(title: item.title)
                 submenu.delegate = self
                 folderURLByMenuID[ObjectIdentifier(submenu)] = itemURL
@@ -3202,6 +3208,126 @@ private func shareApplicationActions(for url: URL) -> [ContextAction] {
         .action(service.title, image: service.image) {
             service.perform(withItems: [url])
         }
+    }
+}
+
+/// One row of the folder List menu. A custom view because this macOS
+/// version doesn't draw `NSMenuItem.image` in these menus, and plain menu
+/// items can't be dragged. Draws icon + title (+ chevron for subfolders),
+/// opens on click via the item's action, and drags the file out.
+final class FolderListMenuItemView: NSView, NSDraggingSource {
+    private static let rowHeight: CGFloat = 24
+    private static let iconSide: CGFloat = 16
+    private static let horizontalInset: CGFloat = 14
+    private static let iconGap: CGFloat = 6
+    private static let chevronWidth: CGFloat = 16
+    private static let maxWidth: CGFloat = 460
+    private static let dragThresholdSquared: CGFloat = 16
+
+    private let url: URL
+    private let title: String
+    private let icon: NSImage
+    private let hasSubmenu: Bool
+    private var mouseDownLocation: NSPoint?
+
+    private static var font: NSFont { .menuFont(ofSize: 0) }
+
+    init(url: URL, title: String, icon: NSImage, hasSubmenu: Bool) {
+        self.url = url
+        self.title = title
+        self.icon = icon
+        self.hasSubmenu = hasSubmenu
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: Self.font]).width)
+        let width = min(
+            Self.maxWidth,
+            Self.horizontalInset * 2 + Self.iconSide + Self.iconGap + textWidth + Self.chevronWidth
+        )
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowHeight))
+        autoresizingMask = [.width]
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let isHighlighted = enclosingMenuItem?.isHighlighted == true
+        if isHighlighted {
+            NSColor.selectedContentBackgroundColor.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 1), xRadius: 6, yRadius: 6).fill()
+        }
+        let textColor: NSColor = isHighlighted ? .selectedMenuItemTextColor : .labelColor
+
+        let iconRect = NSRect(
+            x: Self.horizontalInset,
+            y: (bounds.height - Self.iconSide) / 2,
+            width: Self.iconSide,
+            height: Self.iconSide
+        )
+        icon.draw(in: iconRect)
+
+        let textX = iconRect.maxX + Self.iconGap
+        let textRight = bounds.width - Self.horizontalInset - (hasSubmenu ? Self.chevronWidth : 0)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingMiddle
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: Self.font, .foregroundColor: textColor, .paragraphStyle: paragraph,
+        ]
+        let textHeight = (title as NSString).size(withAttributes: attributes).height
+        (title as NSString).draw(
+            in: NSRect(x: textX, y: (bounds.height - textHeight) / 2, width: max(0, textRight - textX), height: textHeight),
+            withAttributes: attributes
+        )
+
+        if hasSubmenu,
+           let chevron = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold).applying(.init(hierarchicalColor: textColor))) {
+            let size = chevron.size
+            chevron.draw(in: NSRect(
+                x: bounds.width - Self.horizontalInset - size.width,
+                y: (bounds.height - size.height) / 2,
+                width: size.width,
+                height: size.height
+            ))
+        }
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownLocation = event.locationInWindow
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard mouseDownLocation != nil else { return }
+        mouseDownLocation = nil
+        guard let item = enclosingMenuItem, item.submenu == nil, let action = item.action else { return }
+        item.menu?.cancelTracking()
+        NSApp.sendAction(action, to: item.target, from: item)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let downLocation = mouseDownLocation else { return }
+        let dx = event.locationInWindow.x - downLocation.x
+        let dy = event.locationInWindow.y - downLocation.y
+        guard (dx * dx + dy * dy) >= Self.dragThresholdSquared else { return }
+        mouseDownLocation = nil
+
+        let draggingItem = NSDraggingItem(pasteboardWriter: url as NSURL)
+        let iconRect = NSRect(x: Self.horizontalInset, y: (bounds.height - Self.iconSide) / 2, width: Self.iconSide, height: Self.iconSide)
+        draggingItem.setDraggingFrame(iconRect, contents: icon)
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+        enclosingMenuItem?.menu?.cancelTracking()
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        [.copy, .link, .generic, .move]
     }
 }
 

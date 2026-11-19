@@ -201,6 +201,8 @@ struct FolderFanView: View {
             .frame(width: hstackWidth, alignment: .trailing)
         }
         .buttonStyle(.plain)
+        // Drag an item out to Finder, the desktop or another app.
+        .onDrag { NSItemProvider(object: url as NSURL) }
         // `.position(x:y:)` places the HStack *center* at the given
         // point. We want the *icon* center (right end of the HStack)
         // on the curve, so `positionX` is shifted left by half the
