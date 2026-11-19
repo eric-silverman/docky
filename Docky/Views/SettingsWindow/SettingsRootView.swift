@@ -203,6 +203,7 @@ struct SettingsRootView: View {
     // Suppresses history pushes when the selection change originated from
     // a back/forward button rather than a fresh user navigation.
     @State private var isNavigatingHistory = false
+    @State private var searchText = ""
     @Bindable private var navigator = SettingsNavigator.shared
 
     var body: some View {
@@ -212,20 +213,25 @@ struct SettingsRootView: View {
 
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach(settingsSections) { section in
-                    if let title = section.title {
-                        Section(title) {
-                            paneRows(section.panes)
-                        }
-                    } else {
-                        Section {
-                            paneRows(section.panes)
+                if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    ForEach(settingsSections) { section in
+                        if let title = section.title {
+                            Section(title) {
+                                paneRows(section.panes)
+                            }
+                        } else {
+                            Section {
+                                paneRows(section.panes)
+                            }
                         }
                     }
+                } else {
+                    searchResultRows
                 }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
             .listStyle(.sidebar)
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search Settings")
         } detail: {
             SettingsDetailView(pane: selection)
         }
@@ -290,6 +296,46 @@ struct SettingsRootView: View {
               let pane = SettingsPane(rawValue: id) else { return }
         selection = pane
         navigator.pendingPaneID = nil
+    }
+
+    /// Panes whose title, section or settings match every word typed, each
+    /// listing the matching setting titles under its name.
+    @ViewBuilder
+    private var searchResultRows: some View {
+        let words = searchText.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+        let results: [(pane: SettingsPane, matches: [String])] = settingsSections.flatMap { section in
+            section.panes.compactMap { pane in
+                let entry = settingsSearchIndex[pane.rawValue] ?? (titles: [], details: [])
+                let paneText = ([pane.title, section.title ?? ""] + entry.titles + entry.details)
+                    .joined(separator: " ").lowercased()
+                guard words.allSatisfy({ paneText.contains($0) }) else { return nil }
+                let matches = entry.titles.filter { title in
+                    words.contains { title.lowercased().contains($0) }
+                }
+                return (pane, matches)
+            }
+        }
+        if results.isEmpty {
+            Text("No Results")
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(results, id: \.pane) { result in
+                HStack(alignment: .top, spacing: 8) {
+                    PaneIconBadge(symbol: result.pane.symbolName, color: result.pane.tileColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(result.pane.title)
+                        if !result.matches.isEmpty {
+                            Text(result.matches.joined(separator: ", "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                }
+                .tag(result.pane)
+            }
+        }
     }
 
     @ViewBuilder

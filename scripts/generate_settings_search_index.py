@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Regenerates Docky/Views/SettingsWindow/SettingsSearchIndex.swift.
+
+Reads the settings views and collects, per settings pane, the titles of its
+controls (Toggle, Picker, Section, ...) and its explanatory Text, so the
+Settings sidebar search can find a pane by the settings inside it.
+
+Run from the repo root after adding or renaming settings:
+
+    python3 scripts/generate_settings_search_index.py
+"""
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VIEWS = ROOT / "Docky/Views/SettingsWindow"
+OUTPUT = VIEWS / "SettingsSearchIndex.swift"
+
+# Pane (SettingsPane raw value) -> (file, entry member or None for the whole
+# file). Mirrors SettingsDetailView in SettingsRootView.swift.
+PANES = {
+    "profiles": ("ProfilesSettingsView", None),
+    "appearanceGeneral": ("AppearanceSettingsView", "generalSection"),
+    "appearanceIndicators": ("AppearanceSettingsView", "indicatorsSection"),
+    "appearanceTileLayout": ("AppearanceSettingsView", "tileLayoutSection"),
+    "appearanceWindowShape": ("AppearanceSettingsView", "windowShapeSection"),
+    "appearanceWindowBackground": ("AppearanceSettingsView", "windowBackgroundSection"),
+    "appearanceWidgets": ("AppearanceSettingsView", "widgetsSection"),
+    "appearanceThemes": ("ThemesSettingsView", None),
+    "appIcons": ("AppIconsSettingsView", None),
+    "behaviorGeneral": ("BehaviorSettingsView", "generalSection"),
+    "behaviorPlacement": ("BehaviorSettingsView", "placementSection"),
+    "behaviorVisibility": ("BehaviorSettingsView", "visibilitySection"),
+    "behaviorAppTileClick": ("BehaviorSettingsView", "appTileClickSection"),
+    "behaviorAppFolders": ("BehaviorSettingsView", "appFoldersSection"),
+    "behaviorWidgets": ("BehaviorSettingsView", "widgetsSection"),
+    "hiddenApps": ("HiddenAppsSettingsView", None),
+    "launchpad": ("LaunchpadSettingsView", None),
+    "startMenu": ("StartMenuSettingsView", None),
+    "windowManagement": ("WindowManagementSettingsView", None),
+    "actions": ("ActionCatalogSettingsView", None),
+    "externalWidgets": ("WidgetsSettingsView", None),
+    "behaviorLaunch": ("BehaviorSettingsView", "launchSection"),
+    "behaviorSystemDock": ("BehaviorSettingsView", "systemDockSection"),
+    "permissions": ("PermissionsSettingsView", None),
+    "updates": ("UpdatesSettingsView", None),
+    "feedback": ("FeedbackSettingsView", None),
+}
+
+STRING = r'"((?:[^"\\\n]|\\.)*)"'
+LABEL_RE = re.compile(
+    r"\b(?:Toggle|Picker|Section|LabeledContent|Label|Button|Stepper|Slider|GroupBox|"
+    r"DisclosureGroup|Menu|settingsRow|settingRow)\(\s*" + STRING
+)
+TEXT_RE = re.compile(r"\bText\(\s*" + STRING)
+# Buttons too generic to be worth a search result.
+GENERIC = {"OK", "Cancel", "Delete", "Clear", "Reset", "Done", "Close", "Remove", "Active", "Switch"}
+MEMBER_DECL_RE = re.compile(r"(?:var|func)\s+([A-Za-z_][A-Za-z0-9_]*)\b[^{\n]*\{")
+
+
+def member_bodies(source):
+    """Name -> body text for each `var`/`func` with a braced body."""
+    bodies = {}
+    for match in MEMBER_DECL_RE.finditer(source):
+        start = match.end() - 1
+        depth = 0
+        for index in range(start, len(source)):
+            if source[index] == "{":
+                depth += 1
+            elif source[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies.setdefault(match.group(1), source[start:index + 1])
+                    break
+    return bodies
+
+
+def text_for(file_name, entry, section_entries):
+    source = (VIEWS / f"{file_name}.swift").read_text()
+    if entry is None:
+        return source
+    bodies = member_bodies(source)
+    # The entry member plus every helper it reaches in the same file, but not
+    # the other panes' entry members.
+    seen, pending, parts = set(), [entry], []
+    while pending:
+        name = pending.pop()
+        if name in seen or name not in bodies:
+            continue
+        seen.add(name)
+        body = bodies[name]
+        parts.append(body)
+        for other in bodies:
+            if other not in seen and other not in section_entries and re.search(rf"\b{other}\b", body):
+                pending.append(other)
+    return "\n".join(parts)
+
+
+def clean(strings):
+    result = []
+    for value in strings:
+        value = value.replace('\\"', '"').strip()
+        if not value or "\\(" in value or value in GENERIC or value in result:
+            continue
+        result.append(value)
+    return result
+
+
+def is_label(value):
+    return len(value) <= 40 and not value.endswith((".", ":", "?"))
+
+
+def swift_literal(value):
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def main():
+    section_entries_by_file = {}
+    for file_name, entry in PANES.values():
+        if entry:
+            section_entries_by_file.setdefault(file_name, set()).add(entry)
+
+    lines = [
+        "// Generated by scripts/generate_settings_search_index.py. Do not edit;",
+        "// rerun the script after adding or renaming settings.",
+        "",
+        "/// Setting titles and descriptions per pane, for the Settings search.",
+        "let settingsSearchIndex: [String: (titles: [String], details: [String])] = [",
+    ]
+    for pane, (file_name, entry) in PANES.items():
+        text = text_for(file_name, entry, section_entries_by_file.get(file_name, set()) - {entry})
+        texts = clean(TEXT_RE.findall(text))
+        # Short Text is usually a control's label (`Toggle(isOn:) { Text("...") }`);
+        # longer Text is a description.
+        titles = clean(LABEL_RE.findall(text) + [t for t in texts if is_label(t)])
+        details = [value for value in texts if value not in titles]
+        lines.append(f"    \"{pane}\": (")
+        lines.append("        titles: [" + ", ".join(map(swift_literal, titles)) + "],")
+        lines.append("        details: [" + ", ".join(map(swift_literal, details)) + "]")
+        lines.append("    ),")
+    lines.append("]")
+    OUTPUT.write_text("\n".join(lines) + "\n")
+    print(f"Wrote {OUTPUT.relative_to(ROOT)}")
+
+
+if __name__ == "__main__":
+    main()
