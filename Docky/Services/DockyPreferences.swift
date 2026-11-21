@@ -1997,6 +1997,16 @@ enum LaunchpadSortMode: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// Where minimized window tiles sit in the trailing section: false
+    /// (default) puts them just before the Trash, true at the start, next
+    /// to the running apps.
+    var placesMinimizedWindowsFirst: Bool {
+        didSet {
+            guard placesMinimizedWindowsFirst != oldValue else { return }
+            defaults.set(placesMinimizedWindowsFirst, forKey: Keys.placesMinimizedWindowsFirst)
+        }
+    }
+
     /// When true, Docky hides while a fullscreen app is on its target
     /// screen and reveals on edge dwell (gated by `fullscreenRevealDelay`).
     /// Default true, matches the system Dock and what existed before this
@@ -3626,6 +3636,7 @@ enum LaunchpadSortMode: String, CaseIterable, Codable, Identifiable {
         static let showsActivePinnedSeparator = "docky.showsActivePinnedSeparator"
         static let showsRunningApps = "docky.showsRunningApps"
         static let showsMinimizedWindows = "docky.showsMinimizedWindows"
+        static let placesMinimizedWindowsFirst = "docky.placesMinimizedWindowsFirst"
         static let hidesDuringFullscreen = "docky.hidesDuringFullscreen"
         static let enablesShelveMode = "docky.enablesShelveMode"
         static let shelveHidesFinder = "docky.shelveHidesFinder"
@@ -3739,6 +3750,7 @@ enum LaunchpadSortMode: String, CaseIterable, Codable, Identifiable {
         static let showsActivePinnedSeparator = true
         static let showsRunningApps = true
         static let showsMinimizedWindows = true
+        static let placesMinimizedWindowsFirst = false
         static let hidesDuringFullscreen = true
         static let enablesShelveMode = false
         static let shelveHidesFinder = true
@@ -4015,6 +4027,8 @@ enum LaunchpadSortMode: String, CaseIterable, Codable, Identifiable {
         self.showsActivePinnedSeparator = storedShowsActivePinnedSeparator ?? DefaultValues.showsActivePinnedSeparator
         self.showsRunningApps = storedShowsRunningApps ?? DefaultValues.showsRunningApps
         self.showsMinimizedWindows = storedShowsMinimizedWindows ?? DefaultValues.showsMinimizedWindows
+        self.placesMinimizedWindowsFirst = (defaults.object(forKey: Keys.placesMinimizedWindowsFirst) as? Bool)
+            ?? DefaultValues.placesMinimizedWindowsFirst
         self.hidesDuringFullscreen = (defaults.object(forKey: Keys.hidesDuringFullscreen) as? Bool) ?? DefaultValues.hidesDuringFullscreen
         self.enablesShelveMode = storedEnablesShelveMode ?? DefaultValues.enablesShelveMode
         self.shelveHidesFinder = storedShelveHidesFinder ?? DefaultValues.shelveHidesFinder
@@ -4291,6 +4305,7 @@ enum LaunchpadSortMode: String, CaseIterable, Codable, Identifiable {
         hidesRecentApps = DefaultValues.hidesRecentApps
         showsRunningApps = DefaultValues.showsRunningApps
         showsMinimizedWindows = DefaultValues.showsMinimizedWindows
+        placesMinimizedWindowsFirst = DefaultValues.placesMinimizedWindowsFirst
         showsActivePinnedSeparator = DefaultValues.showsActivePinnedSeparator
 
         // App-tile click
@@ -4358,6 +4373,7 @@ enum LaunchpadSortMode: String, CaseIterable, Codable, Identifiable {
         showsActivePinnedSeparator = DefaultValues.showsActivePinnedSeparator
         showsRunningApps = DefaultValues.showsRunningApps
         showsMinimizedWindows = DefaultValues.showsMinimizedWindows
+        placesMinimizedWindowsFirst = DefaultValues.placesMinimizedWindowsFirst
         hidesDuringFullscreen = DefaultValues.hidesDuringFullscreen
         enablesShelveMode = DefaultValues.enablesShelveMode
         shelveHidesFinder = DefaultValues.shelveHidesFinder

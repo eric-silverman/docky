@@ -120,6 +120,7 @@ final class TileStore: ObservableObject {
             _ = DockyPreferences.shared.effectiveShowsActivePinnedSeparator
             _ = DockyPreferences.shared.showsRunningApps
             _ = DockyPreferences.shared.showsMinimizedWindows
+            _ = DockyPreferences.shared.placesMinimizedWindowsFirst
             _ = DockyPreferences.shared.enablesShelveMode
             _ = DockyPreferences.shared.shelveHidesFinder
             _ = DockyPreferences.shared.shelveHidesTrash
@@ -2318,25 +2319,25 @@ final class TileStore: ObservableObject {
     }
 
     private func trailingTiles(withInsertedMinimizedWindows minimizedWindowTiles: [Tile]) -> [Tile] {
-        guard !minimizedWindowTiles.isEmpty else {
-            return trailingTiles
-        }
+        Self.inserting(
+            minimizedWindowTiles,
+            into: trailingTiles,
+            first: DockyPreferences.shared.placesMinimizedWindowsFirst
+        )
+    }
 
-        var result: [Tile] = []
-        var insertedMinimizedWindows = false
-
-        for tile in trailingTiles {
-            if !insertedMinimizedWindows, case .trash = tile.content {
-                result.append(contentsOf: minimizedWindowTiles)
-                insertedMinimizedWindows = true
-            }
-            result.append(tile)
-        }
-
-        if !insertedMinimizedWindows {
-            result.append(contentsOf: minimizedWindowTiles)
-        }
-
+    /// Places minimized window tiles in the trailing section: at the start
+    /// (next to the running apps) when `first`, otherwise just before the
+    /// Trash, or at the end if there is no Trash tile.
+    static func inserting(_ minimizedWindowTiles: [Tile], into trailingTiles: [Tile], first: Bool) -> [Tile] {
+        guard !minimizedWindowTiles.isEmpty else { return trailingTiles }
+        if first { return minimizedWindowTiles + trailingTiles }
+        var result = trailingTiles
+        let trashIndex = result.firstIndex { tile in
+            if case .trash = tile.content { return true }
+            return false
+        } ?? result.endIndex
+        result.insert(contentsOf: minimizedWindowTiles, at: trashIndex)
         return result
     }
 

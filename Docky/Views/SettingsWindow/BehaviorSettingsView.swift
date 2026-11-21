@@ -424,6 +424,13 @@ struct BehaviorSettingsView: View {
                 Text("When turned off, minimized window tiles do not appear in Docky's trailing section.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Place Minimized Windows Next to Apps", isOn: $preferences.placesMinimizedWindowsFirst)
+                    .disabled(!preferences.showsMinimizedWindows)
+
+                Text("Shows minimized windows at the start of the trailing section, before widgets and folders, instead of next to the Trash.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.vertical, 4)
 

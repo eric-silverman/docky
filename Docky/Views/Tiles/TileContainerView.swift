@@ -532,26 +532,11 @@ struct TileContainerView: View {
             return nil
         }
 
-        guard !minimizedWindowTiles.isEmpty else {
-            return previewTrailingTiles
-        }
-
-        var result: [Tile] = []
-        var insertedMinimizedWindows = false
-
-        for tile in previewTrailingTiles {
-            if !insertedMinimizedWindows, case .trash = tile.content {
-                result.append(contentsOf: minimizedWindowTiles)
-                insertedMinimizedWindows = true
-            }
-            result.append(tile)
-        }
-
-        if !insertedMinimizedWindows {
-            result.append(contentsOf: minimizedWindowTiles)
-        }
-
-        return result
+        return TileStore.inserting(
+            minimizedWindowTiles,
+            into: previewTrailingTiles,
+            first: preferences.placesMinimizedWindowsFirst
+        )
     }
 
     private var draggedTile: Tile? {
