@@ -1363,6 +1363,11 @@ struct TileView: View {
                 widgetExpansionTask = nil
                 WidgetExpansionWindowController.shared.dismiss(sourceTileID: tile.id)
             }
+        } else {
+            // The menu's tracking loop consumes leftMouseUp, so
+            // TilePressService never sees it — clear the pressed
+            // state that was held through the menu's lifetime.
+            tilePress.clearPress(tileID: tile.id)
         }
     }
 
