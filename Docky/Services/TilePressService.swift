@@ -64,6 +64,12 @@ final class TilePressService: ObservableObject {
         }
     }
 
+    func clearPress(tileID: String) {
+        if pressedTileID == tileID {
+            pressedTileID = nil
+        }
+    }
+
     private func handle(_ event: NSEvent) {
         switch event.type {
         case .leftMouseDown:

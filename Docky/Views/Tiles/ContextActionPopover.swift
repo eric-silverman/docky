@@ -157,6 +157,11 @@ struct ContextActionMenuPresenter: NSViewRepresentable {
         private var preferredEdge: NSRectEdge
         private var onPresentationChanged: (Bool) -> Void
         private var isInterruptingAutohide = false
+        private var longPressTimer: Timer?
+        private var longPressOrigin: NSPoint?
+        private static let longPressDuration: TimeInterval = 0.5
+        // Below the tile reorder DragGesture's minimumDistance (4) so a drag always cancels first.
+        private static let longPressMoveThreshold: CGFloat = 3
 
         init(
             actionProvider: @escaping (NSEvent.ModifierFlags) -> [ContextAction],
@@ -188,12 +193,13 @@ struct ContextActionMenuPresenter: NSViewRepresentable {
             // it. `handleContextClick` builds it on demand and lets the
             // click through when it turns out empty.
             guard eventMonitor == nil else { return }
-            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { [weak self] event in
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown, .leftMouseUp, .leftMouseDragged]) { [weak self] event in
                 self?.handleContextClick(event) ?? event
             }
         }
 
         func uninstall() {
+            cancelLongPress()
             if let eventMonitor {
                 NSEvent.removeMonitor(eventMonitor)
             }
@@ -208,25 +214,86 @@ struct ContextActionMenuPresenter: NSViewRepresentable {
                 return event
             }
 
+            switch event.type {
+            case .leftMouseUp:
+                cancelLongPress()
+                return event
+            case .leftMouseDragged:
+                if let origin = longPressOrigin {
+                    let dx = event.locationInWindow.x - origin.x
+                    let dy = event.locationInWindow.y - origin.y
+                    if dx * dx + dy * dy > Self.longPressMoveThreshold * Self.longPressMoveThreshold {
+                        cancelLongPress()
+                    }
+                }
+                return event
+            default:
+                break
+            }
+
             let isRightClick = event.type == .rightMouseDown
             let isControlClick = event.type == .leftMouseDown && event.modifierFlags.contains(.control)
-            guard isRightClick || isControlClick else {
-                return event
+
+            if isRightClick || isControlClick {
+                cancelLongPress()
+                let location = view.convert(event.locationInWindow, from: nil)
+                guard view.bounds.contains(location) else {
+                    return event
+                }
+
+                let actions = actionProvider(event.modifierFlags)
+                guard !actions.isEmpty else {
+                    return event
+                }
+
+                let menu = buildMenu(actions: actions)
+                popUpCartouche(menu: menu, in: view)
+                return nil
             }
 
-            let location = view.convert(event.locationInWindow, from: nil)
-            guard view.bounds.contains(location) else {
-                return event
+            if event.type == .leftMouseDown {
+                let location = view.convert(event.locationInWindow, from: nil)
+                if view.bounds.contains(location) {
+                    cancelLongPress()
+                    longPressOrigin = event.locationInWindow
+                    let timer = Timer(timeInterval: Self.longPressDuration, repeats: false) { [weak self] _ in
+                        self?.fireLongPress()
+                    }
+                    // .common so it still fires while the run loop is in event-tracking mode during a press.
+                    RunLoop.main.add(timer, forMode: .common)
+                    longPressTimer = timer
+                }
             }
 
-            let actions = actionProvider(event.modifierFlags)
-            guard !actions.isEmpty else {
-                return event
-            }
+            return event
+        }
 
+        private func cancelLongPress() {
+            longPressTimer?.invalidate()
+            longPressTimer = nil
+            longPressOrigin = nil
+        }
+
+        private func fireLongPress() {
+            let origin = longPressOrigin
+            longPressTimer = nil
+            longPressOrigin = nil
+            // The mouse-up can land where this monitor never sees it (another app,
+            // a drag loop, a window that closed), so re-check the press is still live.
+            guard let view = anchorView,
+                  let window = view.window,
+                  window.isVisible,
+                  NSEvent.pressedMouseButtons & 1 != 0,
+                  let origin
+            else { return }
+            let cursor = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+            let dx = cursor.x - origin.x
+            let dy = cursor.y - origin.y
+            guard dx * dx + dy * dy <= Self.longPressMoveThreshold * Self.longPressMoveThreshold else { return }
+            let actions = actionProvider(NSEvent.modifierFlags)
+            guard !actions.isEmpty else { return }
             let menu = buildMenu(actions: actions)
             popUpCartouche(menu: menu, in: view)
-            return nil
         }
 
         private func popUpCartouche(menu: NSMenu, in view: NSView) {
