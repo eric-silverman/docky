@@ -160,7 +160,8 @@ struct ContextActionMenuPresenter: NSViewRepresentable {
         private var longPressTimer: Timer?
         private var longPressOrigin: NSPoint?
         private static let longPressDuration: TimeInterval = 0.5
-        private static let longPressMoveThreshold: CGFloat = 5
+        // Below the tile reorder DragGesture's minimumDistance (4) so a drag always cancels first.
+        private static let longPressMoveThreshold: CGFloat = 3
 
         init(
             actionProvider: @escaping (NSEvent.ModifierFlags) -> [ContextAction],
@@ -274,9 +275,21 @@ struct ContextActionMenuPresenter: NSViewRepresentable {
         }
 
         private func fireLongPress() {
+            let origin = longPressOrigin
             longPressTimer = nil
             longPressOrigin = nil
-            guard let view = anchorView else { return }
+            // The mouse-up can land where this monitor never sees it (another app,
+            // a drag loop, a window that closed), so re-check the press is still live.
+            guard let view = anchorView,
+                  let window = view.window,
+                  window.isVisible,
+                  NSEvent.pressedMouseButtons & 1 != 0,
+                  let origin
+            else { return }
+            let cursor = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+            let dx = cursor.x - origin.x
+            let dy = cursor.y - origin.y
+            guard dx * dx + dy * dy <= Self.longPressMoveThreshold * Self.longPressMoveThreshold else { return }
             let actions = actionProvider(NSEvent.modifierFlags)
             guard !actions.isEmpty else { return }
             let menu = buildMenu(actions: actions)
@@ -396,6 +409,7 @@ struct ContextActionMenuPresenter: NSViewRepresentable {
 }
 
 private var lazyMenuControllerKey: UInt8 = 0
+
 private final class LazyMenuController: NSObject, NSMenuDelegate {
     private let provider: () -> [ContextAction]
     private let populate: (NSMenu, [ContextAction]) -> Void
