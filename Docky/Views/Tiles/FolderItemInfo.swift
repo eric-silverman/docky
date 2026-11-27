@@ -12,16 +12,16 @@ import UniformTypeIdentifiers
 enum FolderItemInfo {
     /// A folder you can open as a submenu: a directory that isn't a package
     /// (apps, bundles and the like open as files).
-    static func isNavigableFolder(_ url: URL) -> Bool {
+    nonisolated static func isNavigableFolder(_ url: URL) -> Bool {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
         return values?.isDirectory == true && values?.isPackage != true
     }
 
-    static func displayName(for url: URL) -> String {
+    nonisolated static func displayName(for url: URL) -> String {
         (try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? url.lastPathComponent
     }
 
-    static func dragItemProvider(for url: URL) -> NSItemProvider {
+    nonisolated static func dragItemProvider(for url: URL) -> NSItemProvider {
         let provider = NSItemProvider(object: url as NSURL)
         provider.suggestedName = displayName(for: url)
         return provider
@@ -30,10 +30,10 @@ enum FolderItemInfo {
     /// Moves dropped file URLs into `destination`, copying when a move fails
     /// (e.g. across volumes). Skips items already in that folder. Calls
     /// `completion` on the main queue.
-    static func moveDroppedFiles(
+    nonisolated static func moveDroppedFiles(
         providers: [NSItemProvider],
         into destination: URL,
-        completion: @escaping () -> Void
+        completion: @escaping @MainActor @Sendable () -> Void
     ) {
         let typeID = UTType.fileURL.identifier
         let group = DispatchGroup()
@@ -50,15 +50,16 @@ enum FolderItemInfo {
             }
         }
 
-        group.notify(queue: .main) {
+        // File operations off the main thread: a big copy mustn't freeze the dock.
+        group.notify(queue: .global(qos: .userInitiated)) {
             moveItems(collected, into: destination)
-            completion()
+            Task { @MainActor in completion() }
         }
     }
 
     /// Like Finder: moves within a volume, copies across volumes (a move
     /// there would delete the source). Never drops a folder into itself.
-    static func moveItems(_ sources: [URL], into destination: URL) {
+    nonisolated static func moveItems(_ sources: [URL], into destination: URL) {
         let destinationPath = destination.standardizedFileURL.path
         for source in sources {
             let sourcePath = source.standardizedFileURL.path
@@ -74,7 +75,7 @@ enum FolderItemInfo {
         }
     }
 
-    static func isSameVolume(_ a: URL, _ b: URL) -> Bool {
+    nonisolated static func isSameVolume(_ a: URL, _ b: URL) -> Bool {
         let key = URLResourceKey.volumeIdentifierKey
         guard let volumeA = try? a.resourceValues(forKeys: [key]).volumeIdentifier as? NSObject,
               let volumeB = try? b.resourceValues(forKeys: [key]).volumeIdentifier as? NSObject else {

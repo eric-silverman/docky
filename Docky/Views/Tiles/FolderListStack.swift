@@ -171,6 +171,7 @@ final class FolderListStackController: NSObject, ObservableObject {
     private let safeTriangleGrace: TimeInterval = 0.3
     private let springLoadDwell: TimeInterval = 0.7
     private let shadowInset: CGFloat = 24
+    private let maxColumns = 12
 
     private var watcherOwnerID: String {
         "folder-list:\(ObjectIdentifier(self).hashValue)"
@@ -271,6 +272,10 @@ final class FolderListStackController: NSObject, ObservableObject {
 
         NSWorkspace.shared.notificationCenter
             .publisher(for: NSWorkspace.didActivateApplicationNotification)
+            .filter { notification in
+                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                return app?.processIdentifier != ProcessInfo.processInfo.processIdentifier
+            }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.dismiss() }
             .store(in: &cancellables)
@@ -349,6 +354,7 @@ final class FolderListStackController: NSObject, ObservableObject {
         case .unreadable:
             column.state = .unreadable
             column.rows = column.isRoot ? [.openInFinder] : []
+            column.titles = [.openInFinder: String(localized: "Open in Finder")]
         case .loaded:
             let urls = FolderAccessService.shared.sortedItems(in: snapshot, sortMode: tile?.sortMode ?? .dateAdded)
             column.rows = urls.map(Row.item) + (column.isRoot ? [.openInFinder] : [])
@@ -394,6 +400,7 @@ final class FolderListStackController: NSObject, ObservableObject {
                 updated.highlighted = 0
             }
             self.columns[index] = updated
+            self.rowFrames[columnID] = self.rowFrames[columnID]?.filter { updated.rows.contains($0.key) }
             // A submenu whose opener row disappeared closes.
             if updated.highlighted == nil || (index + 1 < self.columns.count
                 && updated.rows[updated.highlighted!] != .item(self.columns[index + 1].url)) {
@@ -428,6 +435,8 @@ final class FolderListStackController: NSObject, ObservableObject {
             if focus { focusColumn(columnIndex + 1, highlightFirst: true) }
             return
         }
+        // A symlink back to an ancestor would otherwise cascade forever.
+        guard columnIndex + 1 < maxColumns else { return }
         closeColumns(after: columnIndex)
         // Starts empty ("loading") and fills in from an off-main read.
         let child = Column(url: url, isRoot: false)
@@ -760,7 +769,7 @@ private struct FolderListColumnView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     switch column.state {
                     case .loading where column.itemCount == 0:
                         placeholder("")
