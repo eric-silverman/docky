@@ -56,15 +56,30 @@ enum FolderItemInfo {
         }
     }
 
+    /// Like Finder: moves within a volume, copies across volumes (a move
+    /// there would delete the source). Never drops a folder into itself.
     static func moveItems(_ sources: [URL], into destination: URL) {
+        let destinationPath = destination.standardizedFileURL.path
         for source in sources {
+            let sourcePath = source.standardizedFileURL.path
             let target = destination.appendingPathComponent(source.lastPathComponent)
-            guard target.standardizedFileURL != source.standardizedFileURL else { continue }
-            do {
-                try FileManager.default.moveItem(at: source, to: target)
-            } catch {
+            guard target.standardizedFileURL != source.standardizedFileURL,
+                  destinationPath != sourcePath,
+                  !destinationPath.hasPrefix(sourcePath + "/") else { continue }
+            if isSameVolume(source, destination) {
+                try? FileManager.default.moveItem(at: source, to: target)
+            } else {
                 try? FileManager.default.copyItem(at: source, to: target)
             }
         }
+    }
+
+    static func isSameVolume(_ a: URL, _ b: URL) -> Bool {
+        let key = URLResourceKey.volumeIdentifierKey
+        guard let volumeA = try? a.resourceValues(forKeys: [key]).volumeIdentifier as? NSObject,
+              let volumeB = try? b.resourceValues(forKeys: [key]).volumeIdentifier as? NSObject else {
+            return false // unknown: copy, which never loses the source
+        }
+        return volumeA.isEqual(volumeB)
     }
 }

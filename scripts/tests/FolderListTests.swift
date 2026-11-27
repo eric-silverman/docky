@@ -111,6 +111,14 @@ struct FolderListTests {
         FolderItemInfo.moveItems([moved, folder.appendingPathComponent("already-here")], into: folder)
         check(FileManager.default.fileExists(atPath: folder.appendingPathComponent("move-me.txt").path), "moveItems moves into the folder")
         check(!FileManager.default.fileExists(atPath: moved.path), "moveItems removes the source")
+        let nested = folder.appendingPathComponent("Inner")
+        try? FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        FolderItemInfo.moveItems([folder], into: nested)
+        FolderItemInfo.moveItems([folder], into: folder)
+        check(FileManager.default.fileExists(atPath: folder.path), "a folder is never moved into itself or its subfolder")
+        check(!FileManager.default.fileExists(atPath: nested.appendingPathComponent("Folder").path), "no recursive copy into a subfolder")
+        check(FolderItemInfo.isSameVolume(folder, nested), "same volume detected")
+        check(!FolderItemInfo.isSameVolume(folder, temp.appendingPathComponent("missing")), "unknown volume counts as different (copy)")
         try? FileManager.default.removeItem(at: temp)
 
         if failures == 0 {

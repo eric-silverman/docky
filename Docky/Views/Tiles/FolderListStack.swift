@@ -62,7 +62,7 @@ struct FolderListStackPresenter: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: FolderListAnchorView, coordinator: FolderListStackController) {
-        coordinator.dismiss()
+        coordinator.tearDown()
     }
 }
 
@@ -97,6 +97,12 @@ final class FolderListPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Docky isn't the app the user is working in, so its menu shortcuts
+    /// (Cmd-Q, Cmd-W, …) must not fire while the stack holds the keyboard.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        true
+    }
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown, keyHandler?(event) == true { return }
@@ -200,6 +206,15 @@ final class FolderListStackController: NSObject, ObservableObject {
         observeChanges(main: main)
     }
 
+    /// Breaks the controller → panel → hosting view → controller cycle when
+    /// the tile goes away.
+    func tearDown() {
+        dismiss()
+        panel?.keyHandler = nil
+        panel?.contentView = nil
+        panel = nil
+    }
+
     func dismiss() {
         guard isPresented else { return }
         isPresented = false
@@ -252,6 +267,12 @@ final class FolderListStackController: NSObject, ObservableObject {
             .merge(with: center.publisher(for: NSWindow.didChangeScreenNotification, object: main))
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.layout() }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didActivateApplicationNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.dismiss() }
             .store(in: &cancellables)
 
         FolderAccessService.shared.$changeToken
@@ -358,6 +379,12 @@ final class FolderListStackController: NSObject, ObservableObject {
             guard !Task.isCancelled, let self,
                   let index = self.columns.firstIndex(where: { $0.id == columnID }) else { return }
             var updated = self.columns[index]
+            if updated.state == .loaded, case .loaded = snapshot,
+               FolderAccessService.shared.sortedItems(in: snapshot, sortMode: self.tile?.sortMode ?? .dateAdded).map(Row.item)
+                == updated.rows.filter({ $0 != .openInFinder }) {
+                self.highlightFirstOnLoad.remove(columnID)
+                return
+            }
             let previouslyHighlighted = updated.highlighted.map { updated.rows[$0] }
             self.apply(snapshot: snapshot, to: &updated)
             if let previouslyHighlighted {
@@ -402,14 +429,13 @@ final class FolderListStackController: NSObject, ObservableObject {
             return
         }
         closeColumns(after: columnIndex)
-        var child = Column(url: url, isRoot: false)
-        apply(snapshot: FolderAccessService.shared.snapshot(of: url), to: &child)
-        if focus { child.highlighted = child.rows.isEmpty ? nil : 0 }
+        // Starts empty ("loading") and fills in from an off-main read.
+        let child = Column(url: url, isRoot: false)
         columns.append(child)
         beginWatching(url)
         if focus {
             focusedColumn = columns.count - 1
-            if child.highlighted == nil { highlightFirstOnLoad.insert(child.id) }
+            highlightFirstOnLoad.insert(child.id)
         }
         reload(columnID: child.id)
         layout()
@@ -440,7 +466,9 @@ final class FolderListStackController: NSObject, ObservableObject {
     // MARK: - Highlight
 
     private func setHighlight(column columnIndex: Int, row rowIndex: Int?, openSubmenu: Bool) {
-        guard columns.indices.contains(columnIndex) else { return }
+        // Indices can be stale (delayed tasks, a row view mid re-render).
+        guard columns.indices.contains(columnIndex),
+              rowIndex.map({ columns[columnIndex].rows.indices.contains($0) }) ?? true else { return }
         hoverOpenTask?.cancel()
         columns[columnIndex].highlighted = rowIndex
         focusedColumn = columnIndex
@@ -482,15 +510,19 @@ final class FolderListStackController: NSObject, ObservableObject {
     // MARK: - Mouse (called from the SwiftUI rows)
 
     func pointerMoved(column columnIndex: Int, row rowIndex: Int, location: CGPoint) {
-        // Quick Look may have taken key if the user clicked it.
-        if let panel, !panel.isKeyWindow { panel.makeKey() }
+        guard columns.indices.contains(columnIndex),
+              columns[columnIndex].rows.indices.contains(rowIndex) else { return }
+        // Take the keyboard back only from our own Quick Look (the user
+        // clicked it), never from another app.
+        if let panel, !panel.isKeyWindow, FolderQuickLookController.shared.isKeyWindow {
+            panel.makeKey()
+        }
         deferredHoverTask?.cancel()
 
         // The safe-triangle origin is the last point inside the highlighted
         // row, so it doesn't creep while the pointer crosses other rows.
         let mouse = NSEvent.mouseLocation
-        guard columns.indices.contains(columnIndex),
-              columns[columnIndex].highlighted != rowIndex else {
+        guard columns[columnIndex].highlighted != rowIndex else {
             focusedColumn = columnIndex
             pointerOrigin = mouse
             return
@@ -500,10 +532,12 @@ final class FolderListStackController: NSObject, ObservableObject {
         if columnIndex + 1 < columns.count, let origin = pointerOrigin,
            FolderListLayout.isInSafeTriangle(point: mouse, origin: origin, child: columns[columnIndex + 1].screenFrame) {
             let grace = safeTriangleGrace
+            let target = (columns[columnIndex].id, columns[columnIndex].rows[rowIndex])
             deferredHoverTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(grace * 1_000_000_000))
-                guard !Task.isCancelled, let self, self.isPresented else { return }
-                self.setHighlight(column: columnIndex, row: rowIndex, openSubmenu: true)
+                guard !Task.isCancelled, let self, self.isPresented,
+                      let (column, row) = self.indices(of: target) else { return }
+                self.setHighlight(column: column, row: row, openSubmenu: true)
             }
             return
         }
@@ -527,6 +561,13 @@ final class FolderListStackController: NSObject, ObservableObject {
                 dismiss()
             }
         }
+    }
+
+    /// Current indices for a row captured earlier, or nil if it's gone.
+    private func indices(of target: (column: UUID, row: Row)) -> (Int, Int)? {
+        guard let column = columns.firstIndex(where: { $0.id == target.column }),
+              let row = columns[column].rows.firstIndex(of: target.row) else { return nil }
+        return (column, row)
     }
 
     func reportRowFrame(column id: UUID, row: Row, frame: CGRect) {
@@ -555,13 +596,15 @@ final class FolderListStackController: NSObject, ObservableObject {
     /// Drag hovering a folder row: open it as a submenu after a dwell.
     func springLoad(column columnIndex: Int, row rowIndex: Int, isTargeted: Bool) {
         springLoadTask?.cancel()
-        guard isTargeted else { return }
+        guard isTargeted, columns.indices.contains(columnIndex),
+              columns[columnIndex].rows.indices.contains(rowIndex) else { return }
         let dwell = springLoadDwell
+        let target = (columns[columnIndex].id, columns[columnIndex].rows[rowIndex])
         springLoadTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(dwell * 1_000_000_000))
-            guard !Task.isCancelled, let self else { return }
-            self.setHighlight(column: columnIndex, row: rowIndex, openSubmenu: false)
-            self.openChild(of: columnIndex, row: rowIndex, focus: false)
+            guard !Task.isCancelled, let self, let (column, row) = self.indices(of: target) else { return }
+            self.setHighlight(column: column, row: row, openSubmenu: false)
+            self.openChild(of: column, row: row, focus: false)
         }
     }
 

@@ -690,6 +690,10 @@ final class FolderQuickLookController: NSObject, QLPreviewPanelDataSource, QLPre
         QLPreviewPanel.sharedPreviewPanelExists() ? QLPreviewPanel.shared()?.frame : nil
     }
 
+    var isKeyWindow: Bool {
+        QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared()?.isKeyWindow == true
+    }
+
     func isShowing(for owner: AnyObject) -> Bool {
         self.owner === owner
             && QLPreviewPanel.sharedPreviewPanelExists()
