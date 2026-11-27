@@ -25,7 +25,6 @@
 
 import AppKit
 import Combine
-import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -100,17 +99,12 @@ final class FolderListPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown {
-            FolderListStackController.log.debug("key \(event.keyCode) repeat=\(event.isARepeat)")
-            if keyHandler?(event) == true { return }
-        }
+        if event.type == .keyDown, keyHandler?(event) == true { return }
         super.sendEvent(event)
     }
 }
 
 final class FolderListStackController: NSObject, ObservableObject {
-    static let log = Logger(subsystem: "gt.quintero.Docky", category: "FolderList")
-
     enum Row: Hashable {
         case item(URL)
         case openInFinder
@@ -265,14 +259,6 @@ final class FolderListStackController: NSObject, ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.reloadAll() }
             .store(in: &cancellables)
-
-        // If Quick Look took key (the user clicked it), hand the keyboard
-        // back to the list as soon as the pointer is over it again.
-        if let panel {
-            center.publisher(for: NSWindow.didResignKeyNotification, object: panel)
-                .sink { _ in FolderListStackController.log.debug("panel resigned key") }
-                .store(in: &cancellables)
-        }
     }
 
     // MARK: - Layout
