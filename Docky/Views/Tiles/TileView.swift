@@ -42,7 +42,7 @@ struct TileView: View {
     @State private var tooltipDelayTask: Task<Void, Never>?
     @State private var globalTileFrame: CGRect = .zero
     @State private var isFolderPopoverPresented = false
-    @State private var isFolderListMenuPresented = false
+    @State private var isFolderListPresented = false
     @State private var isAppFolderPopoverPresented = false
     @State private var isAppFolderListMenuPresented = false
     @State private var isContextMenuPresented = false
@@ -588,7 +588,7 @@ struct TileView: View {
                 WidgetExpansionWindowController.shared.dismiss(sourceTileID: tile.id)
                 isTooltipPresented = false
                 isFolderPopoverPresented = false
-                isFolderListMenuPresented = false
+                isFolderListPresented = false
                 isAppFolderPopoverPresented = false
                 isAppFolderListMenuPresented = false
                 isContextMenuPresented = false
@@ -600,7 +600,7 @@ struct TileView: View {
                 guard !isPresented else { return }
                 lastFolderPopoverDismissedAt = Date.timeIntervalSinceReferenceDate
             }
-            .onChange(of: isFolderListMenuPresented) { _ in
+            .onChange(of: isFolderListPresented) { _ in
                 updateTooltipPresentation()
             }
             .onChange(of: isAppFolderListMenuPresented) { _ in
@@ -649,7 +649,7 @@ struct TileView: View {
 
                 if case .folder(let folder) = tile.content {
                     if folderContentViewMode == .list {
-                        FolderListMenuPresenter(
+                        FolderListStackPresenter(
                             tile: FolderTile(
                                 url: folder.url,
                                 displayName: folder.displayName,
@@ -657,7 +657,8 @@ struct TileView: View {
                                 contentViewMode: folderContentViewMode,
                                 sortMode: folderSortMode
                             ),
-                            isPresented: $isFolderListMenuPresented,
+                            initialSnapshot: folderSnapshot,
+                            isPresented: $isFolderListPresented,
                             preferredEdge: inwardPopoverEdge
                         )
                     } else if folderContentViewMode == .fan,
@@ -1378,7 +1379,7 @@ struct TileView: View {
         let shouldShow = isHovering
             && tooltipTitle != nil
             && !isFolderPopoverPresented
-            && !isFolderListMenuPresented
+            && !isFolderListPresented
             && !isAppFolderPopoverPresented
             && !isAppFolderListMenuPresented
             && !isContextMenuPresented
@@ -1505,8 +1506,12 @@ struct TileView: View {
 
             if folderContentViewMode == .list {
                 isFolderPopoverPresented = false
-                guard !isFolderListMenuPresented else { return }
-                isFolderListMenuPresented = true
+                // Clicks on this tile are ignored by the stack's click-away
+                // monitor, so the tile is what toggles it.
+                if !isFolderListPresented {
+                    folderSnapshot = FolderAccessService.shared.snapshot(of: folder.url)
+                }
+                isFolderListPresented.toggle()
                 return
             }
 
@@ -2514,264 +2519,6 @@ private struct TileTooltipPopoverPresenter: NSViewRepresentable {
 }
 
 private final class TooltipAnchorView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-}
-
-private struct FolderListMenuPresenter: NSViewRepresentable {
-    let tile: FolderTile
-    @Binding var isPresented: Bool
-    let preferredEdge: NSRectEdge
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(tile: tile, isPresented: $isPresented, preferredEdge: preferredEdge)
-    }
-
-    func makeNSView(context: Context) -> FolderListMenuAnchorView {
-        FolderListMenuAnchorView()
-    }
-
-    func updateNSView(_ nsView: FolderListMenuAnchorView, context: Context) {
-        context.coordinator.update(tile: tile, isPresented: $isPresented, preferredEdge: preferredEdge)
-
-        if isPresented {
-            DispatchQueue.main.async {
-                context.coordinator.show(relativeTo: nsView)
-            }
-        } else {
-            context.coordinator.close()
-        }
-    }
-
-    static func dismantleNSView(_ nsView: FolderListMenuAnchorView, coordinator: Coordinator) {
-        coordinator.close()
-    }
-
-    final class Coordinator: NSObject, NSMenuDelegate {
-        /// Estimated height (pt) per NSMenuItem row that carries a 16x16 image
-        /// + single-line title. Used to derive how many items fit in the
-        /// menu's screen before macOS would force scroll arrows.
-        private static let menuRowHeight: CGFloat = 22
-        /// Vertical padding reserved for: menu top/bottom inset, the
-        /// "Open in Finder" item + separator, the "Show More" item itself.
-        private static let reservedMenuChrome: CGFloat = 72
-        /// Hard floor so we never collapse the menu absurdly small even on
-        /// a tiny external display.
-        private static let minimumInlineItemLimit: Int = 20
-        /// Extra rows shaved off the fits-on-screen count so the menu
-        /// doesn't kiss the screen edge — keeps the "Show More" item
-        /// comfortably above the bottom of the visible area.
-        private static let inlineItemSafetyMargin: Int = 5
-
-        private var tile: FolderTile
-        private var isPresented: Binding<Bool>
-        private var preferredEdge: NSRectEdge
-        private weak var anchorView: NSView?
-        private var isShowing = false
-        private var isInterruptingAutohide = false
-        private var folderURLByMenuID: [ObjectIdentifier: URL] = [:]
-        private var inlineItemLimit: Int = 60
-
-        init(tile: FolderTile, isPresented: Binding<Bool>, preferredEdge: NSRectEdge) {
-            self.tile = tile
-            self.isPresented = isPresented
-            self.preferredEdge = preferredEdge
-            super.init()
-        }
-
-        func update(tile: FolderTile, isPresented: Binding<Bool>, preferredEdge: NSRectEdge) {
-            self.tile = tile
-            self.isPresented = isPresented
-            self.preferredEdge = preferredEdge
-        }
-
-        func show(relativeTo view: NSView) {
-            guard view.window != nil, !isShowing else { return }
-
-            anchorView = view
-            isShowing = true
-            beginAutohideInterruption(for: view)
-            folderURLByMenuID.removeAll()
-            inlineItemLimit = Self.computeInlineItemLimit(
-                for: view.window?.screen ?? NSScreen.main,
-                dockWindowFrame: view.window?.frame
-            )
-            let menu = buildMenu(for: tile.url, title: tile.displayName)
-            popUp(menu: menu, in: view)
-            endAutohideInterruption()
-            isShowing = false
-
-            DispatchQueue.main.async { [isPresented] in
-                guard isPresented.wrappedValue else { return }
-                isPresented.wrappedValue = false
-            }
-        }
-
-        func close() {
-            endAutohideInterruption()
-            isShowing = false
-            folderURLByMenuID.removeAll()
-        }
-
-        private func buildMenu(for folderURL: URL, title: String) -> NSMenu {
-            let menu = NSMenu(title: title)
-            populate(menu: menu, for: folderURL)
-            return menu
-        }
-
-        private func populate(menu: NSMenu, for folderURL: URL) {
-            menu.removeAllItems()
-
-            switch FolderAccessService.shared.snapshot(of: folderURL) {
-            case .loaded(let itemURLs):
-                let sortedItemURLs = FolderAccessService.shared.sortedItems(in: itemURLs, sortMode: tile.sortMode)
-                if sortedItemURLs.isEmpty {
-                    let emptyItem = NSMenuItem(title: "No visible items", action: nil, keyEquivalent: "")
-                    emptyItem.isEnabled = false
-                    menu.addItem(emptyItem)
-                } else if sortedItemURLs.count > inlineItemLimit {
-                    for itemURL in sortedItemURLs.prefix(inlineItemLimit) {
-                        menu.addItem(menuItem(for: itemURL))
-                    }
-                    let overflowCount = sortedItemURLs.count - inlineItemLimit
-                    let showMoreItem = NSMenuItem(title: "Show More (\(overflowCount))", action: nil, keyEquivalent: "")
-                    let overflowMenu = NSMenu(title: showMoreItem.title)
-                    for itemURL in sortedItemURLs.dropFirst(inlineItemLimit) {
-                        overflowMenu.addItem(menuItem(for: itemURL))
-                    }
-                    showMoreItem.submenu = overflowMenu
-                    menu.addItem(showMoreItem)
-                } else {
-                    for itemURL in sortedItemURLs {
-                        menu.addItem(menuItem(for: itemURL))
-                    }
-                }
-            case .unreadable:
-                let unreadableItem = NSMenuItem(title: "Can't read folder contents", action: nil, keyEquivalent: "")
-                unreadableItem.isEnabled = false
-                menu.addItem(unreadableItem)
-            }
-
-            if !menu.items.isEmpty {
-                menu.addItem(.separator())
-            }
-
-            let openInFinderItem = NSMenuItem(title: "Open in Finder", action: #selector(openInFinder(_:)), keyEquivalent: "")
-            openInFinderItem.target = self
-            openInFinderItem.representedObject = folderURL
-            menu.addItem(openInFinderItem)
-        }
-
-        private func menuItem(for itemURL: URL) -> NSMenuItem {
-            let item = NSMenuItem(title: displayName(for: itemURL), action: nil, keyEquivalent: "")
-            item.image = listMenuIcon(for: itemURL)
-
-            if isNavigableFolder(itemURL) {
-                let submenu = NSMenu(title: item.title)
-                submenu.delegate = self
-                folderURLByMenuID[ObjectIdentifier(submenu)] = itemURL
-                item.submenu = submenu
-            } else {
-                item.action = #selector(openFile(_:))
-                item.target = self
-                item.representedObject = itemURL
-            }
-
-            return item
-        }
-
-        private static func computeInlineItemLimit(for screen: NSScreen?, dockWindowFrame: CGRect?) -> Int {
-            let visibleHeight = screen?.visibleFrame.height ?? 800
-            // Only subtract dock chrome when Docky is horizontal (top/bottom) —
-            // a vertical dock spans the screen's height and doesn't shrink
-            // the menu's vertical headroom.
-            let dockChromeHeight: CGFloat = {
-                guard let dockWindowFrame else { return 0 }
-                return dockWindowFrame.width > dockWindowFrame.height ? dockWindowFrame.height : 0
-            }()
-            let usableHeight = max(0, visibleHeight - reservedMenuChrome - dockChromeHeight)
-            let fittedCount = Int((usableHeight / menuRowHeight).rounded(.down))
-            return max(minimumInlineItemLimit, fittedCount - inlineItemSafetyMargin)
-        }
-
-        private func listMenuIcon(for itemURL: URL) -> NSImage {
-            let icon = IconCacheService.shared.previewIcon(forFileURL: itemURL).copy() as? NSImage
-                ?? IconCacheService.shared.previewIcon(forFileURL: itemURL)
-            icon.size = NSSize(width: 16, height: 16)
-            return icon
-        }
-
-        @objc private func openFile(_ sender: NSMenuItem) {
-            guard let url = sender.representedObject as? URL else { return }
-            _ = NSWorkspace.shared.open(url)
-        }
-
-        @objc private func openInFinder(_ sender: NSMenuItem) {
-            guard let url = sender.representedObject as? URL else { return }
-            Task {
-                _ = await AppleScriptService.shared.openFinderWindow(for: url)
-            }
-        }
-
-        private func displayName(for itemURL: URL) -> String {
-            (try? itemURL.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? itemURL.lastPathComponent
-        }
-
-        private func isNavigableFolder(_ itemURL: URL) -> Bool {
-            let values = try? itemURL.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
-            return values?.isDirectory == true && values?.isPackage != true
-        }
-
-        func menuNeedsUpdate(_ menu: NSMenu) {
-            guard let folderURL = folderURLByMenuID[ObjectIdentifier(menu)] else { return }
-            populate(menu: menu, for: folderURL)
-        }
-
-        private func popUp(menu: NSMenu, in view: NSView) {
-            let selector = NSSelectorFromString("_popUpMenuRelativeToRect:inView:preferredEdge:")
-            if menu.responds(to: selector) {
-                typealias Fn = @convention(c) (NSMenu, Selector, NSRect, NSView?, NSRectEdge) -> Void
-                let imp = menu.method(for: selector)
-                let fn = unsafeBitCast(imp, to: Fn.self)
-                fn(menu, selector, view.bounds, view, preferredEdge)
-                return
-            }
-
-            menu.update()
-            let anchorRect = view.bounds
-            let anchor: NSPoint
-            switch preferredEdge {
-            case .minX:
-                anchor = NSPoint(x: anchorRect.minX, y: anchorRect.midY)
-            case .maxX:
-                anchor = NSPoint(x: anchorRect.maxX, y: anchorRect.midY)
-            case .minY:
-                anchor = NSPoint(x: anchorRect.midX - menu.size.width / 2, y: anchorRect.minY)
-            case .maxY:
-                anchor = NSPoint(x: anchorRect.midX - menu.size.width / 2, y: anchorRect.maxY)
-            @unknown default:
-                anchor = NSPoint(x: anchorRect.midX - menu.size.width / 2, y: anchorRect.maxY)
-            }
-
-            menu.popUp(positioning: nil, at: anchor, in: view)
-        }
-
-        private func beginAutohideInterruption(for view: NSView) {
-            guard !isInterruptingAutohide else { return }
-            (view.window as? MainWindow)?.beginInteraction()
-            isInterruptingAutohide = true
-        }
-
-        private func endAutohideInterruption() {
-            guard isInterruptingAutohide else { return }
-            (anchorView?.window as? MainWindow)?.endInteraction()
-            isInterruptingAutohide = false
-        }
-    }
-}
-
-private final class FolderListMenuAnchorView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }

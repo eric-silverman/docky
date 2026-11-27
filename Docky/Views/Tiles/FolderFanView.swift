@@ -269,7 +269,7 @@ struct FolderFanView: View {
     }
 
     private func displayName(for url: URL) -> String {
-        (try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? url.lastPathComponent
+        FolderItemInfo.displayName(for: url)
     }
 
     /// Y offset for the fan's collapsed-onto-tile state. Matches the

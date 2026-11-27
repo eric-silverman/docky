@@ -383,12 +383,11 @@ struct FolderPopoverView: View {
     }
 
     private func isNavigableFolder(_ itemURL: URL) -> Bool {
-        let values = try? itemURL.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
-        return values?.isDirectory == true && values?.isPackage != true
+        FolderItemInfo.isNavigableFolder(itemURL)
     }
 
     private func displayName(for itemURL: URL) -> String {
-        (try? itemURL.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? itemURL.lastPathComponent
+        FolderItemInfo.displayName(for: itemURL)
     }
 
     private func openCurrentFolderInFinder() {
@@ -400,43 +399,15 @@ struct FolderPopoverView: View {
     /// popover dismissal because the drag image is owned at the screen level
     /// (same pattern as AppFolderTileView.beginDragOutOfFolder).
     private func dragItemProvider(for itemURL: URL) -> NSItemProvider {
-        let provider = NSItemProvider(object: itemURL as NSURL)
-        provider.suggestedName = displayName(for: itemURL)
         isPresented = false
-        return provider
+        return FolderItemInfo.dragItemProvider(for: itemURL)
     }
 
     /// Spring-loaded drop landing: moves the dragged URLs into `destination`.
     /// Cross-volume drops fall back to a copy. Skips items that already live
     /// in the destination folder.
     private func moveDroppedFiles(providers: [NSItemProvider], into destination: URL) {
-        let typeID = UTType.fileURL.identifier
-        let group = DispatchGroup()
-        var collected: [URL] = []
-        let queue = DispatchQueue(label: "docky.folder.drop")
-
-        for provider in providers {
-            guard provider.hasItemConformingToTypeIdentifier(typeID) else { continue }
-            group.enter()
-            provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, _ in
-                defer { group.leave() }
-                guard let data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                queue.sync { collected.append(url) }
-            }
-        }
-
-        group.notify(queue: .main) {
-            for source in collected {
-                let target = destination.appendingPathComponent(source.lastPathComponent)
-                guard target.standardizedFileURL != source.standardizedFileURL else { continue }
-                do {
-                    try FileManager.default.moveItem(at: source, to: target)
-                } catch {
-                    // Cross-volume moves throw; copy as a fallback so the
-                    // user still gets something at the destination.
-                    try? FileManager.default.copyItem(at: source, to: target)
-                }
-            }
+        FolderItemInfo.moveDroppedFiles(providers: providers, into: destination) {
             isPresented = false
             DockDragService.shared.clear()
         }
@@ -713,8 +684,56 @@ final class FolderQuickLookController: NSObject, QLPreviewPanelDataSource, QLPre
     static let shared = FolderQuickLookController()
 
     private var previewURL: URL?
+    private weak var owner: AnyObject?
+
+    var frame: CGRect? {
+        QLPreviewPanel.sharedPreviewPanelExists() ? QLPreviewPanel.shared()?.frame : nil
+    }
+
+    var isKeyWindow: Bool {
+        QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared()?.isKeyWindow == true
+    }
+
+    func isShowing(for owner: AnyObject) -> Bool {
+        self.owner === owner
+            && QLPreviewPanel.sharedPreviewPanelExists()
+            && QLPreviewPanel.shared()?.isVisible == true
+    }
+
+    /// Shows the preview in front of Docky's panels without taking key, so
+    /// the caller keeps the keyboard (Space closes it again). Plain
+    /// `orderFront` doesn't show the panel from a non-active app; a raised
+    /// level plus `orderFrontRegardless` does.
+    func show(_ url: URL, owner: AnyObject) {
+        self.owner = owner
+        previewURL = url
+        guard let panel = QLPreviewPanel.shared() else { return }
+        panel.dataSource = self
+        panel.delegate = self
+        panel.reloadData()
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
+        panel.orderFrontRegardless()
+    }
+
+    /// Follows the owner's highlight while its preview is open.
+    func retarget(_ url: URL, owner: AnyObject) {
+        guard isShowing(for: owner), url != previewURL else { return }
+        previewURL = url
+        QLPreviewPanel.shared()?.reloadData()
+    }
+
+    /// Closes the preview only if `owner` opened it, so a stale presenter
+    /// can't close a newer one's preview.
+    func close(owner: AnyObject) {
+        guard self.owner === owner else { return }
+        self.owner = nil
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared()?.isVisible == true {
+            QLPreviewPanel.shared()?.orderOut(nil)
+        }
+    }
 
     func preview(_ url: URL) {
+        owner = nil
         previewURL = url
 
         guard let panel = QLPreviewPanel.shared() else { return }
